@@ -52,8 +52,3 @@ Counts are aggregated per student per day; zero indicates no student experiences
 | 6 consecutive slots | 0 |
 
 Only a single student encounters a run of three consecutive slots, and no longer runs occur.
-
-## Recommendations
-- Fine-tune penalty weights or introduce adaptive weights per student cohort if further fairness improvements are required.
-- Add optional reports (via the UI downloads) that highlight the single remaining consecutive-run case so administrators can decide whether to manually adjust.
-- The current implementation is modular: alternative heuristics (e.g. ILP solver or metaheuristics) can be plugged into the `_candidate_slots` exploration step if future datasets prove more demanding.

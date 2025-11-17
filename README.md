@@ -22,7 +22,7 @@ Live Preview: [(p229021.streamlit.app)](https://p229021.streamlit.app/)
 
 ## Installation
 ```bash
-git clone <repository-url>
+git clone https://github.com/uzairkbrr/GT_Assignment_02.git
 ```
 ```bash
 cd GT_Assignment_02

@@ -2,6 +2,8 @@
 
 This project provides an intelligent exam scheduling system that generates clash-free exam timetables. It uses graph-coloring techniques to prevent overlapping exams, respect capacity limits, and reduce student workload.
 
+Live Preview: [(p229021.streamlit.app)](https://p229021.streamlit.app/)
+
 ## Features
 - Clash-free scheduling based on student enrollments  
 - Maximum 500 students per slot  
@@ -79,8 +81,3 @@ This project is part of an academic assignment.
 ## Author
 
 Developed by **[Uzair Ahmad](https://uzairkbrr.netlify.app/)**
-
-
-```bash
-streamlit run app.py
-```

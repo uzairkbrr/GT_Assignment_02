@@ -1,29 +1,237 @@
-import streamlit as st
-import pandas as pd
+import re
 from io import BytesIO
-from scheduler import schedule_exams  # Make sure scheduler.py is in the same folder
+from typing import List
+
+import networkx as nx
+import numpy as np
+import pandas as pd
+import plotly.graph_objects as go
+import streamlit as st
+
+from scheduler import schedule_exams
 
 st.set_page_config(page_title="FAST Peshawar Exam Scheduler", layout="wide")
 
 st.title("📘 FAST Peshawar Sessional 1 Exam Scheduler")
 
-st.markdown("""
+st.markdown(
+    """
 This dashboard helps generate a **clash-free exam schedule**  
-with constraints such as:
+while respecting the following constraints:
 - ≤ 500 students per slot  
 - 6 slots per day × 3 days  
 - Minimum consecutive papers  
 - Minimized 3+ papers in one day  
-""")
+"""
+)
 
-# --- File Upload ---
-import streamlit as st
-import pandas as pd
-from io import BytesIO
-from scheduler import schedule_exams  # Make sure scheduler.py is in the same folder
-import re
+# --- visualization helpers ---
+def build_conflict_graph_figure(df: pd.DataFrame) -> go.Figure:
+    """
+    Construct a course-level conflict graph and return a Plotly figure.
+    """
+    df = df.dropna(subset=["Student ID", "Course Code", "Subject Name"])
+    if df.empty:
+        fig = go.Figure()
+        fig.update_layout(
+            title="Conflict Graph (no course data available)",
+            xaxis={"visible": False},
+            yaxis={"visible": False},
+            plot_bgcolor="white",
+        )
+        return fig
 
-st.set_page_config(page_title="FAST Peshawar Exam Scheduler", layout="wide")
+    course_sets = df.groupby(["Course Code", "Subject Name"])["Student ID"].agg(lambda values: set(values))
+
+    G = nx.Graph()
+    for (code, subject), students in course_sets.items():
+        node_id = (code, subject)
+        G.add_node(node_id, code=code, subject=subject, size=len(students))
+
+    course_items = list(course_sets.items())
+    for idx, ((code_a, subject_a), students_a) in enumerate(course_items):
+        for (code_b, subject_b), students_b in course_items[idx + 1 :]:
+            shared = len(students_a & students_b)
+            if shared:
+                G.add_edge((code_a, subject_a), (code_b, subject_b), weight=shared)
+
+    if not G.nodes:
+        fig = go.Figure()
+        fig.update_layout(
+            title="Conflict Graph (no courses detected)",
+            xaxis={"visible": False},
+            yaxis={"visible": False},
+            plot_bgcolor="white",
+        )
+        return fig
+
+    pos = nx.spring_layout(G, seed=42)
+
+    edge_x: List[float] = []
+    edge_y: List[float] = []
+    for source, target in G.edges():
+        x0, y0 = pos[source]
+        x1, y1 = pos[target]
+        edge_x += [x0, x1, None]
+        edge_y += [y0, y1, None]
+
+    edge_trace = go.Scatter(
+        x=edge_x,
+        y=edge_y,
+        line=dict(width=0.8, color="#9aa5b1"),
+        hoverinfo="none",
+        mode="lines",
+    )
+
+    node_x: List[float] = []
+    node_y: List[float] = []
+    node_text: List[str] = []
+    node_hover: List[str] = []
+    node_size: List[float] = []
+    node_color: List[int] = []
+
+    for node, data in G.nodes(data=True):
+        x, y = pos[node]
+        degree = len(list(G.neighbors(node)))
+        node_x.append(x)
+        node_y.append(y)
+        node_text.append(data["code"])
+        node_hover.append(
+            f"{data['code']} – {data['subject']}<br>Students: {data['size']}<br>Conflicts: {degree}"
+        )
+        node_size.append(max(18, data["size"] / 3))
+        node_color.append(degree)
+
+    node_trace = go.Scatter(
+        x=node_x,
+        y=node_y,
+        mode="markers+text",
+        text=node_text,
+        textposition="top center",
+        hovertext=node_hover,
+        hoverinfo="text",
+        marker=dict(
+            size=node_size,
+            color=node_color,
+            colorscale="Tealgrn",
+            reversescale=True,
+            showscale=True,
+            colorbar=dict(title="Conflict degree"),
+            line=dict(width=1.2, color="#1f2933"),
+        ),
+    )
+
+    fig = go.Figure(data=[edge_trace, node_trace])
+    fig.update_layout(
+        title="Conflict Graph (Course-Level)",
+        showlegend=False,
+        plot_bgcolor="white",
+        margin=dict(l=40, r=40, t=80, b=40),
+        height=720,
+        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+    )
+    return fig
+
+
+def build_timetable_heatmap(course_schedule: pd.DataFrame, students_per_slot: pd.DataFrame) -> go.Figure:
+    """
+    Create a heatmap representing the timetable with hover details for each slot.
+    """
+    if course_schedule.empty:
+        fig = go.Figure()
+        fig.update_layout(
+            title="Timetable Heatmap (no scheduled courses)",
+            xaxis={"visible": False},
+            yaxis={"visible": False},
+            plot_bgcolor="white",
+        )
+        return fig
+
+    day_nums = sorted(course_schedule["DayNum"].dropna().unique())
+    slot_nums = sorted(course_schedule["SlotNum"].dropna().unique())
+
+    if not day_nums or not slot_nums:
+        fig = go.Figure()
+        fig.update_layout(
+            title="Timetable Heatmap (slot metadata unavailable)",
+            xaxis={"visible": False},
+            yaxis={"visible": False},
+            plot_bgcolor="white",
+        )
+        return fig
+
+    day_labels = [f"Day {d}" for d in day_nums]
+    slot_labels = [f"Slot {s}" for s in slot_nums]
+
+    matrix = np.zeros((len(day_nums), len(slot_nums)))
+    hover_text = [["No exams" for _ in slot_nums] for _ in day_nums]
+    display_text = [["" for _ in slot_nums] for _ in day_nums]
+
+    slot_student_map = students_per_slot.set_index(["DayNum", "SlotNum"])["Students"].to_dict()
+
+    for i, day in enumerate(day_nums):
+        for j, slot in enumerate(slot_nums):
+            matrix[i, j] = slot_student_map.get((day, slot), 0)
+            slot_courses = course_schedule[
+                (course_schedule["DayNum"] == day) & (course_schedule["SlotNum"] == slot)
+            ]
+            if not slot_courses.empty:
+                labels = [f"{row['Course Code']}" for _, row in slot_courses.iterrows()]
+                subject_lines = [f"{row['Subject Name']}" for _, row in slot_courses.iterrows()]
+                hover_lines = [f"{code} – {subject}" for code, subject in zip(labels, subject_lines)]
+                hover_display = "<br>".join(hover_lines)
+                hover_text[i][j] = hover_display
+
+                max_inline = 5
+                inline_courses = "<br>".join(labels[:max_inline])
+                if len(labels) > max_inline:
+                    inline_courses += "<br>…"
+                display_text[i][j] = f"{int(matrix[i, j])} students<br>{len(labels)} papers<br>{inline_courses}"
+            else:
+                display_text[i][j] = "0 students<br>No papers"
+
+    heatmap = go.Heatmap(
+        z=matrix,
+        x=slot_labels,
+        y=day_labels,
+        text=display_text,
+        hovertext=hover_text,
+        hovertemplate="%{y}, %{x}<br>Students: %{z:.0f}<br>%{hovertext}<extra></extra>",
+        colorscale="Blues",
+        colorbar=dict(title="Students"),
+    )
+
+    fig = go.Figure(data=[heatmap])
+    fig.update_traces(texttemplate="%{text}", textfont=dict(color="#1f2933", size=11))
+    fig.update_layout(
+        title="Timetable Heatmap",
+        xaxis=dict(title="Slot", side="top"),
+        yaxis=dict(title="Day"),
+        margin=dict(l=60, r=60, t=80, b=60),
+        height=700,
+        plot_bgcolor="white",
+    )
+    fig.update_yaxes(autorange="reversed")
+    return fig
+
+
+def render_fig_download(fig: go.Figure, label: str, filename: str) -> None:
+    """
+    Render a download button for a Plotly figure if static export is available.
+    """
+    try:
+        image_bytes = fig.to_image(format="png", scale=2)
+    except Exception:
+        st.info("Install the 'kaleido' package to enable image downloads for charts.")
+        return
+
+    st.download_button(
+        label,
+        data=image_bytes,
+        file_name=filename,
+        mime="image/png",
+    )
 
 # --- helper: excel download ---
 def to_excel_bytes(df: pd.DataFrame) -> bytes:
@@ -231,6 +439,17 @@ if uploaded_file is not None:
                 st.write("No students found with 4 consecutive papers.")
             else:
                 st.dataframe(records_4_consecutive)
+
+        # --- Graph visualisations ---
+        st.subheader("🔗 Conflict Graph (Course-Level)")
+        conflict_fig = build_conflict_graph_figure(df)
+        st.plotly_chart(conflict_fig, use_container_width=True)
+        render_fig_download(conflict_fig, "Download Conflict Graph (PNG)", "conflict_graph.png")
+
+        st.subheader("🖼️ Timetable Heatmap")
+        timetable_fig = build_timetable_heatmap(course_schedule, students_per_slot)
+        st.plotly_chart(timetable_fig, use_container_width=True)
+        render_fig_download(timetable_fig, "Download Timetable Heatmap (PNG)", "timetable_heatmap.png")
 
         # --- Download buttons for all outputs ---
         st.subheader("⬇️ Download generated files")

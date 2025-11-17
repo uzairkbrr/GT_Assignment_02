@@ -2,3 +2,6 @@ streamlit
 pandas
 xlsxwriter
 openpyxl
+networkx
+plotly
+kaleido
